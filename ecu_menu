@@ -1,0 +1,89 @@
+#!/bin/bash
+# ecu_menu.sh - Interactive menu for ELM327 / 
+# Subaru ECU tools Config
+MAC="01:23:45:67:89:BA" RFCOMM_DEV="/dev/rfcomm0"
+# Colors for nicer output
+GREEN='\033[1;32m' YELLOW='\033[1;33m' 
+RED='\033[1;31m' NC='\033[0m' # No Color while 
+true; do
+    clear echo -e 
+    "${GREEN}===============================" echo 
+    " Subaru ELM327 / ECU Menu" echo -e 
+    "===============================${NC}" echo 
+    "1) Pair & Connect ELM327 Bluetooth Adapter" 
+    echo "2) Bind RFCOMM to /dev/rfcomm0" echo "3) 
+    List ECU-related files" echo "4) Show paired 
+    Bluetooth devices" echo "5) Test connection 
+    (list serial ports)" echo "6) Launch Tactrix 
+    logger (Python)" echo "7) Launch 
+    single_string_connection" echo "8) Extract 
+    Impreza ECU maps (.7z)" echo "9) Exit" echo 
+    read -p "Choose an option [1-9]: " choice case 
+    "$choice" in
+        1) echo -e "${YELLOW}Pairing and 
+            connecting to $MAC...${NC}" sudo 
+            ./pair_connect_elm327.exp read -p 
+            "Press Enter to continue..."
+            ;;
+        2) echo -e "${YELLOW}Binding RFCOMM 
+            interface...${NC}" sudo 
+            ./bind_rfcomm.sh read -p "Press Enter 
+            to continue..."
+            ;;
+        3) echo -e "${GREEN}Files in current 
+            directory:${NC}" ls -lh read -p "Press 
+            Enter to continue..."
+            ;;
+        4) echo -e "${YELLOW}Currently 
+            paired/trusted Bluetooth 
+            devices:${NC}" bluetoothctl 
+            paired-devices read -p "Press Enter to 
+            continue..."
+            ;;
+        5) echo -e "${YELLOW}Checking available 
+            serial ports...${NC}" ls /dev/tty* 
+            /dev/rfcomm* 2>/dev/null echo echo "If 
+            /dev/rfcomm0 is listed, your adapter 
+            is ready." read -p "Press Enter to 
+            continue..."
+            ;;
+        6) if [ -f tactrix_logger_full.py ]; then 
+                echo -e "${YELLOW}Running 
+                tactrix_logger_full.py...${NC}" 
+                sudo python3 
+                tactrix_logger_full.py
+            else echo -e 
+                "${RED}tactrix_logger_full.py not 
+                found!${NC}"
+            fi read -p "Press Enter to 
+            continue..."
+            ;;
+        7) if [ -f single_string_connection ]; 
+            then
+                echo -e "${YELLOW}Launching 
+                single_string_connection...${NC}" 
+                ./single_string_connection
+            else echo -e 
+                "${RED}single_string_connection 
+                not found!${NC}"
+            fi read -p "Press Enter to 
+            continue..."
+            ;;
+        8) if [ -f impreza_ecu_maps_1.7z ]; then 
+                echo -e "${YELLOW}Extracting 
+                Impreza ECU maps...${NC}" 7z x 
+                impreza_ecu_maps_1.7z 
+                -oimpreza_ecu_maps echo "Extracted 
+                to ./impreza_ecu_maps/"
+            else echo -e "${RED}File 
+                impreza_ecu_maps_1.7z not 
+                found!${NC}"
+            fi read -p "Press Enter to 
+            continue..."
+            ;;
+        9) echo -e "${GREEN}Goodbye!${NC}" exit 0
+            ;;
+        *) echo -e "${RED}Invalid choice.${NC}" 
+            sleep 1
+            ;;
+    esac done

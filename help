@@ -1,0 +1,1 @@
+Run tests with: python -m pytest subaru_config/ wrxdash/test_obd_service.py -v

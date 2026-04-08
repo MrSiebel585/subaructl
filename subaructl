@@ -1,0 +1,473 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+SSM_PORT="${SUBARU_SSM_PORT:-/dev/ttyACM0}"
+SSM_BAUD="${SUBARU_SSM_BAUD:-9600}"
+ELM_PORT="${SUBARU_ELM327_PORT:-/dev/rfcomm0}"
+DASH_URL="${SUBARU_DASH_URL:-http://localhost:8080}"
+OLLAMA_URL="${SUBARU_OLLAMA_URL:-http://localhost:11434/api/generate}"
+OLLAMA_MODEL="${SUBARU_OLLAMA_MODEL:-tinyllama}"
+
+PASS_COUNT=0
+WARN_COUNT=0
+FAIL_COUNT=0
+
+pass() {
+  PASS_COUNT=$((PASS_COUNT + 1))
+  printf "[PASS] %s\n" "$1"
+}
+
+warn() {
+  WARN_COUNT=$((WARN_COUNT + 1))
+  printf "[WARN] %s\n" "$1"
+}
+
+fail() {
+  FAIL_COUNT=$((FAIL_COUNT + 1))
+  printf "[FAIL] %s\n" "$1"
+}
+
+check_cmd() {
+  local name="$1"
+  local install_hint="$2"
+  if command -v "$name" >/dev/null 2>&1; then
+    pass "command '$name' available"
+  else
+    fail "command '$name' missing. Fix: $install_hint"
+  fi
+}
+
+check_file() {
+  local path="$1"
+  if [[ -f "$ROOT_DIR/$path" ]]; then
+    pass "file exists: $path"
+  else
+    fail "file missing: $path"
+  fi
+}
+
+check_python_module() {
+  local mod="$1"
+  local hint="$2"
+  if python3 -c "import $mod" >/dev/null 2>&1; then
+    pass "python module '$mod' import OK"
+  else
+    warn "python module '$mod' missing. Fix: $hint"
+  fi
+}
+
+check_port_in_use() {
+  local port="$1"
+  if command -v lsof >/dev/null 2>&1; then
+    if lsof -nP -iTCP:"$port" -sTCP:LISTEN >/dev/null 2>&1; then
+      pass "TCP port $port is listening"
+    else
+      warn "TCP port $port not listening"
+    fi
+    return 0
+  fi
+
+  if command -v ss >/dev/null 2>&1; then
+    local ss_out
+    ss_out="$(ss -ltn 2>/dev/null || true)"
+    if printf "%s\n" "$ss_out" | rg -q ":$port\\b"; then
+      pass "TCP port $port is listening"
+    else
+      warn "TCP port $port not listening"
+    fi
+  else
+    warn "neither lsof nor ss available; skipping port check for $port"
+  fi
+}
+
+check_dashboard_api() {
+  if command -v curl >/dev/null 2>&1; then
+    if curl -fsS "${DASH_URL}/api/logs" >/dev/null 2>&1; then
+      pass "dashboard API reachable: ${DASH_URL}/api/logs"
+    else
+      warn "dashboard API not reachable at ${DASH_URL}/api/logs"
+      printf "       Fix: start dashboard with:\n"
+      printf "       SUBARU_ELM327_PORT=%s python3 %s/wrxdash/app.py\n" "$ELM_PORT" "$ROOT_DIR"
+    fi
+  else
+    warn "curl missing; skipping API check"
+  fi
+}
+
+check_device() {
+  local dev="$1"
+  local label="$2"
+  if [[ -e "$dev" ]]; then
+    pass "$label device present: $dev"
+  else
+    warn "$label device missing: $dev"
+  fi
+}
+
+check_device_access() {
+  local dev="$1"
+  local label="$2"
+  if [[ ! -e "$dev" ]]; then
+    warn "$label access check skipped (device missing)"
+    return 0
+  fi
+  if [[ -r "$dev" && -w "$dev" ]]; then
+    pass "$label device read/write OK: $dev"
+  else
+    fail "$label device permission issue: $dev"
+    printf "       Fix: ensure user is in dialout group, then relogin:\n"
+    printf "       sudo usermod -aG dialout \"$USER\"\n"
+  fi
+}
+
+check_group() {
+  if id -nG "$USER" | rg -qw dialout; then
+    pass "user '$USER' is in dialout group"
+  else
+    warn "user '$USER' is not in dialout group"
+    printf "       Fix: sudo usermod -aG dialout \"$USER\" && relogin\n"
+  fi
+}
+
+check_serial_busy() {
+  local dev="$1"
+  local label="$2"
+  if [[ ! -e "$dev" ]]; then
+    return 0
+  fi
+  if command -v lsof >/dev/null 2>&1; then
+    if lsof "$dev" >/dev/null 2>&1; then
+      warn "$label device appears busy: $dev"
+      lsof "$dev" 2>/dev/null | sed 's/^/       /'
+    else
+      pass "$label device not busy: $dev"
+    fi
+  else
+    warn "lsof missing; skipping busy check for $dev"
+  fi
+}
+
+print_env_summary() {
+  local ollama_base
+  ollama_base="$(ollama_api_base)"
+  cat <<EOF
+Environment summary:
+  SUBARU_SSM_PORT=$SSM_PORT
+  SUBARU_SSM_BAUD=$SSM_BAUD
+  SUBARU_ELM327_PORT=$ELM_PORT
+  SUBARU_DASH_URL=$DASH_URL
+  SUBARU_OLLAMA_URL=$OLLAMA_URL
+  SUBARU_OLLAMA_BASE=$ollama_base
+  SUBARU_OLLAMA_MODEL=$OLLAMA_MODEL
+EOF
+}
+
+ollama_api_base() {
+  printf "%s\n" "${OLLAMA_URL%/api/generate}"
+}
+
+check_ollama_api() {
+  local ollama_base
+  ollama_base="$(ollama_api_base)"
+  if ! command -v curl >/dev/null 2>&1; then
+    warn "curl missing; skipping Ollama API check"
+    return 0
+  fi
+
+  if curl -fsS "${ollama_base}/api/tags" >/dev/null 2>&1; then
+    pass "Ollama API reachable: ${ollama_base}/api/tags"
+  else
+    warn "Ollama API not reachable at ${ollama_base}/api/tags"
+    printf "       Fix: start Ollama with:\n"
+    printf "       %s ollama start\n" "$ROOT_DIR/subaructl"
+  fi
+}
+
+check_ollama_model() {
+  local ollama_base tags_output
+  ollama_base="$(ollama_api_base)"
+
+  if ! command -v curl >/dev/null 2>&1; then
+    warn "curl missing; skipping Ollama model check"
+    return 0
+  fi
+
+  tags_output="$(curl -fsS "${ollama_base}/api/tags" 2>/dev/null || true)"
+  if [[ -z "$tags_output" ]]; then
+    warn "Ollama model check skipped (API unavailable)"
+    return 0
+  fi
+
+  if printf "%s" "$tags_output" | rg -q "\"name\"\\s*:\\s*\"${OLLAMA_MODEL//\//\\/}(:[^\"]+)?\""; then
+    pass "Ollama model available: $OLLAMA_MODEL"
+  else
+    warn "Ollama model missing: $OLLAMA_MODEL"
+    printf "       Fix: pull it with:\n"
+    printf "       %s ollama pull %s\n" "$ROOT_DIR/subaructl" "$OLLAMA_MODEL"
+  fi
+}
+
+color() {
+  local code="$1"
+  if [[ -t 1 ]]; then
+    case "$code" in
+      pass) tput setaf 2 ;;  # green
+      warn) tput setaf 3 ;;  # yellow
+      fail) tput setaf 1 ;;  # red
+      bold) tput bold ;;
+      reset) tput sgr0 ;;
+      *) echo "$1" ;;
+    esac
+  fi
+}
+
+pass() {
+  PASS_COUNT=$((PASS_COUNT + 1))
+  printf "$(color pass)[PASS]$(color reset) %s\n" "$1"
+}
+
+warn() {
+  WARN_COUNT=$((WARN_COUNT + 1))
+  printf "$(color warn)[WARN]$(color reset) %s\n" "$1"
+}
+
+fail() {
+  FAIL_COUNT=$((FAIL_COUNT + 1))
+  printf "$(color fail)[FAIL]$(color reset) %s\n" "$1"
+}
+
+doctor() {
+  echo "Subaru Doctor"
+  echo "Repo: $ROOT_DIR"
+  print_env_summary
+  echo
+
+  check_cmd python3 "sudo apt install -y python3"
+  check_cmd rg "sudo apt install -y ripgrep"
+  check_cmd curl "sudo apt install -y curl"
+  check_cmd ls "coreutils should already provide this"
+  check_cmd ollama "curl -fsSL https://ollama.com/install.sh | sh"
+
+  check_file "logging/ssm_logger_csv.py"
+  check_file "wrxdash/app.py"
+  check_file "ecuextractor/cli.py"
+  check_file "run_all_help.sh"
+
+  check_python_module serial "python3 -m pip install pyserial"
+  check_python_module flask "python3 -m pip install flask"
+  check_python_module flask_socketio "python3 -m pip install flask-socketio"
+  check_python_module requests "python3 -m pip install requests"
+  check_python_module obd "python3 -m pip install obd"
+
+  check_group
+  check_device "$SSM_PORT" "SSM"
+  check_device_access "$SSM_PORT" "SSM"
+  check_serial_busy "$SSM_PORT" "SSM"
+
+  check_device "$ELM_PORT" "ELM327"
+  check_device_access "$ELM_PORT" "ELM327"
+  check_serial_busy "$ELM_PORT" "ELM327"
+
+  check_port_in_use 8080
+  check_dashboard_api
+  check_port_in_use 11434
+  check_ollama_api
+  check_ollama_model
+
+  echo
+  printf "Summary: %d pass, %d warn, %d fail\n" "$PASS_COUNT" "$WARN_COUNT" "$FAIL_COUNT"
+  if [[ "$FAIL_COUNT" -gt 0 ]]; then
+    exit 2
+  fi
+}
+
+show_help() {
+  cat <<'EOF'
+Usage: subaructl <COMMAND> [ARGS]
+
+Commands:
+  doctor     Diagnostics (cmds/files/ports/groups/serial)
+  ssm-log    Start SSM CSV logger
+  ai-log     Start SSM CSV logger with Ollama summaries
+  dash       Launch wrxdash Flask dashboard
+  ollama     Manage local Ollama service/model
+  patch      Generate safe ECU patch
+  run <svc>  Run service (ssm-log/ai-log/dash/patch/ollama)
+  help       Show this help
+  --json     JSON output mode
+
+Examples:
+  ./subaructl doctor
+  SUBARU_SSM_PORT=/dev/ttyACM0 ./subaructl ssm-log
+  SUBARU_OLLAMA_MODEL=tinyllama ./subaructl ai-log
+  ./subaructl ollama status
+  ./subaructl ollama pull tinyllama
+  ./subaructl run dash
+  ./subaructl patch baseline.bin stage1.bin --safety-check
+EOF
+}
+
+ssm_log() {
+  echo "Starting SSM CSV logger..."
+  exec python3 "$ROOT_DIR/logging/ssm_logger_csv.py"
+}
+
+ai_log() {
+  echo "Starting SSM AI logger with Ollama model '$OLLAMA_MODEL'..."
+  exec env \
+    SUBARU_SSM_PORT="$SSM_PORT" \
+    SUBARU_SSM_BAUD="$SSM_BAUD" \
+    SUBARU_OLLAMA_URL="$OLLAMA_URL" \
+    SUBARU_OLLAMA_MODEL="$OLLAMA_MODEL" \
+    python3 "$ROOT_DIR/logging/ssm_ai_logger.py"
+}
+
+dashboard() {
+  echo "Starting dashboard..."
+  exec python3 "$ROOT_DIR/wrxdash/app.py"
+}
+
+ollama_status() {
+  local ollama_base
+  ollama_base="$(ollama_api_base)"
+  echo "Ollama configuration"
+  echo "  model: $OLLAMA_MODEL"
+  echo "  url:   $OLLAMA_URL"
+  echo "  base:  $ollama_base"
+
+  if command -v ollama >/dev/null 2>&1; then
+    echo "  binary: available"
+  else
+    echo "  binary: missing"
+  fi
+
+  if command -v curl >/dev/null 2>&1 && curl -fsS "${ollama_base}/api/tags" >/dev/null 2>&1; then
+    echo "  api: reachable"
+    ollama list 2>/dev/null || true
+  else
+    echo "  api: not reachable"
+  fi
+}
+
+ollama_start() {
+  if ! command -v ollama >/dev/null 2>&1; then
+    echo "ollama is not installed" >&2
+    echo "Install with: curl -fsSL https://ollama.com/install.sh | sh" >&2
+    exit 1
+  fi
+
+  if pgrep -x ollama >/dev/null 2>&1; then
+    echo "Ollama is already running"
+    return 0
+  fi
+
+  echo "Starting Ollama in the background..."
+  nohup ollama serve >/tmp/subaru-ollama.log 2>&1 &
+  sleep 3
+  ollama_status
+}
+
+ollama_pull() {
+  local model="${1:-$OLLAMA_MODEL}"
+  if ! command -v ollama >/dev/null 2>&1; then
+    echo "ollama is not installed" >&2
+    exit 1
+  fi
+  echo "Pulling Ollama model '$model'..."
+  exec ollama pull "$model"
+}
+
+ollama_ctl() {
+  local subcmd="${1:-status}"
+  shift || true
+  case "$subcmd" in
+    status) ollama_status "$@" ;;
+    start|serve|up) ollama_start "$@" ;;
+    pull) ollama_pull "$@" ;;
+    *)
+      echo "Unknown ollama command: $subcmd" >&2
+      echo "Usage: subaructl ollama <status|start|pull [model]>" >&2
+      exit 1
+      ;;
+  esac
+}
+
+ecu_patch() {
+  local baseline="${1:-$ROOT_DIR/ecuextractor/baseline.json}"
+  local target="${2:-$ROOT_DIR/ecuextractor/stage1_compare.json}"
+  echo "Generating safe ECU patch..."
+  python3 "$ROOT_DIR/ecuextractor/patch_cli.py" "$baseline" "$target" --safety-check --flash-sim --out "safe_patch.json"
+  echo "Safe patch generated: safe_patch.json"
+}
+
+run_service() {
+  local svc="$1"
+  shift
+  case "$svc" in
+    ssm-log|ssm) ssm_log "$@" ;;
+    ai-log|ai|ssm-ai) ai_log "$@" ;;
+    dash|dashboard) dashboard "$@" ;;
+    patch|ecu) ecu_patch "$@" ;;
+    ollama) ollama_ctl "$@" ;;
+    fastecu|fast) fastecu_build_run ;;
+    dash-gui|imprezadash) imprezadash_launch ;;
+    wrxlogger|warningsystem) wrxlogger_launch ;;
+    obdai|obd-ai) obdai_launch "$@" ;;
+    *)
+      echo "Unknown service: $svc" >&2
+      exit 1
+      ;;
+  esac
+}
+
+obdai_launch() {
+  cd "$ROOT_DIR/obdai"
+  pip install -r requirements.txt || poetry install || true
+  PYTHONPATH="$ROOT_DIR/obdai/src" python -m obdai.cli "$@"
+}
+
+fastecu_build_run() {
+  echo "Building & running FastECU..."
+  cd "$ROOT_DIR/FastECU"
+  qmake && make -j$(nproc)
+  ./FastECU
+}
+
+imprezadash_launch() {
+  cd "$ROOT_DIR/imprezadash"
+  poetry shell || python3 -m venv venv && source venv/bin/activate && pip install -r requirements.txt
+  python3 main.py
+}
+
+json_mode() {
+  # TODO: JSON output for doctor
+  echo "{}"
+}
+
+main() {
+  local cmd="${1:-help}"
+  shift
+  if [[ "$cmd" == "--json" ]]; then
+    json_mode
+    return
+  fi
+  case "$cmd" in
+    doctor) doctor ;;
+    ssm-log) ssm_log "$@" ;;
+    ai-log) ai_log "$@" ;;
+    dash) dashboard "$@" ;;
+    ollama) ollama_ctl "$@" ;;
+    patch) ecu_patch "$@" ;;
+    run) run_service "$@" ;;
+    help|-h|--help) show_help ;;
+    *)
+      echo "Unknown command: $cmd" >&2
+      show_help
+      exit 1
+      ;;
+  esac
+}
+
+main "$@"

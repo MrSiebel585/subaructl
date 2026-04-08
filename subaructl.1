@@ -1,0 +1,74 @@
+.TH SUBARUCTL 1 "2025" "Subaru Control CLI"
+.SH NAME
+subaructl \- Subaru ECU/OBD unified CLI
+
+.SH SYNOPSIS
+.B subaructl
+.IR COMMAND 
+[ARGS]
+
+.SH DESCRIPTION
+Unified CLI for Subaru diagnostics, logging, dashboard, ECU patching.
+
+.SH OPTIONS
+.TP
+.B --json
+JSON output mode for machine-readable diagnostics.
+
+.SH COMMANDS
+.TP
+.B doctor
+Diagnostics (cmds/files/ports/groups/serial).
+
+.TP
+.B ssm-log
+Start SSM CSV logger.
+
+.TP
+.B dash
+Launch wrxdash Flask dashboard.
+
+.TP
+.B patch .IR BASELINE .IR TARGET
+Generate safe ECU patch (--safety-check/flash-sim).
+
+.TP
+.B run .IR SERVICE
+Run service: ssm-log, dash, patch, fastecu, dash-gui, obdai.
+
+.TP
+.B help
+Show this help message.
+
+.SH EXAMPLES
+.B subaructl doctor
+.br
+.B subaructl doctor --json
+.br
+.B subaructl ssm-log
+.br
+.B subaructl run dash
+.br
+.B subaructl patch baseline.bin stage1.bin
+.br
+.B subaructl patch baseline.bin stage1.bin --safety-check
+
+.SH ENVIRONMENT
+.TP
+SUBARU_SSM_PORT
+Default: /dev/ttyACM0
+
+.TP
+SUBARU_ELM327_PORT
+Default: /dev/rfcomm0
+
+.TP
+SUBARU_DASH_URL
+Default: http://localhost:8080
+
+.SH AUTHOR
+BlackBOXAI
+
+.SH "SEE ALSO"
+.B run_all_help.sh(1),
+ecuextractor/README.md
