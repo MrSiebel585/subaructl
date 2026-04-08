@@ -1,5 +1,5 @@
 [Desktop Entry] Name=WRX AI Dashboard 
 Comment=Start Subaru ECU Dashboard with TinyLlama 
-AI Exec=/home/wrx/subaru/run_dash.sh 
+AI Exec=/opt/subaru/subaructl 
 Icon=utilities-terminal Terminal=true 
 Type=Application Categories=Utility;
